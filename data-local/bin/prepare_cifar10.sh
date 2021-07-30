@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"  # ~/data-local/bin/
 
 echo "Downloading and unpacking CIFAR-10"
 mkdir -p $DIR/../workdir

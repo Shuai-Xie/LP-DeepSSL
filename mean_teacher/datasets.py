@@ -5,7 +5,7 @@
 # http://creativecommons.org/licenses/by-nc/4.0/ or send a letter to
 # Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
 #
-# Changes were made by 
+# Changes were made by
 # Authors: A. Iscen, G. Tolias, Y. Avrithis, O. Chum. 2018.
 
 import torchvision.transforms as transforms
@@ -13,37 +13,33 @@ import torchvision.transforms as transforms
 from . import data
 from .utils import export
 
-import os
-import pdb
 
-@export
+@export  # add func name to __all__
 def cifar10(isTwice=True):
-    channel_stats = dict(mean=[0.4914, 0.4822, 0.4465],
-                         std=[0.2470,  0.2435,  0.2616])
+    channel_stats = dict(mean=[0.4914, 0.4822, 0.4465], std=[0.2470, 0.2435, 0.2616])
 
     if isTwice:
-        train_transformation = data.TransformTwice(transforms.Compose([
-            data.RandomTranslateWithReflect(4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(**channel_stats)
-        ]))
-
+        train_transformation = data.TransformTwice(  # self-defined cls, return (out1, out2)
+            transforms.Compose([
+                data.RandomTranslateWithReflect(4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(**channel_stats)
+            ]))
 
     else:
-        train_transformation = data.TransformOnce(transforms.Compose([
-            data.RandomTranslateWithReflect(4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(**channel_stats)
-        ]))
+        train_transformation = data.TransformOnce(  # self-defined cls, return out1
+            transforms.Compose([
+                data.RandomTranslateWithReflect(4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(**channel_stats)
+            ]))
 
     eval_transformation = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(**channel_stats)
+        transforms.Normalize(**channel_stats),
     ])
-
-    myhost = os.uname()[1]
 
     data_dir = 'data-local/images/cifar/cifar10/by-image'
 
@@ -58,25 +54,27 @@ def cifar10(isTwice=True):
 @export
 def cifar100(isTwice=True):
     channel_stats = dict(mean=[0.4914, 0.4822, 0.4465],
-                         std=[0.2470,  0.2435,  0.2616]) # should we use different stats - do this
+                         std=[0.2470, 0.2435, 0.2616])  # should we use different stats - do this
     if isTwice:
-        train_transformation = data.TransformTwice(transforms.Compose([
-            data.RandomTranslateWithReflect(4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(**channel_stats)
-        ]))
+        train_transformation = data.TransformTwice(
+            transforms.Compose([
+                data.RandomTranslateWithReflect(4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(**channel_stats)
+            ]))
     else:
-        train_transformation = data.TransformOnce(transforms.Compose([
-            data.RandomTranslateWithReflect(4),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(**channel_stats)
-        ]))
+        train_transformation = data.TransformOnce(
+            transforms.Compose([
+                data.RandomTranslateWithReflect(4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(**channel_stats)
+            ]))
 
     eval_transformation = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(**channel_stats)
+        transforms.Normalize(**channel_stats),
     ])
 
     data_dir = 'data-local/images/cifar/cifar100/by-image'
@@ -91,43 +89,38 @@ def cifar100(isTwice=True):
     }
 
 
-
 @export
 def miniimagenet(isTwice=True):
-    mean_pix = [x/255.0 for x in [120.39586422,  115.59361427, 104.54012653]]
-    std_pix = [x/255.0 for x in [70.68188272,  68.27635443,  72.54505529]]
+    mean_pix = [x / 255.0 for x in [120.39586422, 115.59361427, 104.54012653]]
+    std_pix = [x / 255.0 for x in [70.68188272, 68.27635443, 72.54505529]]
 
-    channel_stats = dict(mean=mean_pix,
-                         std=std_pix)
+    channel_stats = dict(mean=mean_pix, std=std_pix)
 
     if isTwice:
-        train_transformation = data.TransformTwice(transforms.Compose([
-            transforms.RandomRotation(10),
-            transforms.RandomCrop(84, padding=8),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(**channel_stats)
-        ]))
+        train_transformation = data.TransformTwice(
+            transforms.Compose([
+                transforms.RandomRotation(10),
+                transforms.RandomCrop(84, padding=8),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(**channel_stats)
+            ]))
     else:
-        train_transformation = data.TransformOnce(transforms.Compose([
-            transforms.RandomRotation(10),
-            transforms.RandomCrop(84, padding=8),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(**channel_stats)
-        ]))
+        train_transformation = data.TransformOnce(
+            transforms.Compose([
+                transforms.RandomRotation(10),
+                transforms.RandomCrop(84, padding=8),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(**channel_stats)
+            ]))
 
-
-    eval_transformation = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(**channel_stats)
-    ])
+    eval_transformation = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize(**channel_stats)])
 
     data_dir = 'data-local/images/miniimagenet'
-    
 
     print("Using mini-imagenet from", data_dir)
-
 
     return {
         'train_transformation': train_transformation,

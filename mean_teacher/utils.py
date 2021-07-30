@@ -4,13 +4,13 @@
 # 4.0 International License. To view a copy of this license, visit
 # http://creativecommons.org/licenses/by-nc/4.0/ or send a letter to
 # Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
-
 """Utility functions and classes"""
 
 import sys
 import pdb
 from torch.utils.data.sampler import Sampler
 import numpy as np
+
 
 def parameters_string(module):
     lines = [
@@ -22,24 +22,21 @@ def parameters_string(module):
     row_format = "{name:<40} {shape:>20} ={total_size:>12,d}"
     params = list(module.named_parameters())
     for name, param in params:
-        lines.append(row_format.format(
-            name=name,
-            shape=" * ".join(str(p) for p in param.size()),
-            total_size=param.numel()
-        ))
+        lines.append(
+            row_format.format(name=name,
+                              shape=" * ".join(str(p) for p in param.size()),
+                              total_size=param.numel()))
     lines.append("=" * 75)
-    lines.append(row_format.format(
-        name="all parameters",
-        shape="sum of above",
-        total_size=sum(int(param.numel()) for name, param in params)
-    ))
+    lines.append(
+        row_format.format(name="all parameters",
+                          shape="sum of above",
+                          total_size=sum(int(param.numel()) for name, param in params)))
     lines.append("")
     return "\n".join(lines)
 
 
 def assert_exactly_one(lst):
-    assert sum(int(bool(el)) for el in lst) == 1, ", ".join(str(el)
-                                                            for el in lst)
+    assert sum(int(bool(el)) for el in lst) == 1, ", ".join(str(el) for el in lst)
 
 
 class AverageMeterSet:
@@ -50,7 +47,13 @@ class AverageMeterSet:
         return self.meters[key]
 
     def update(self, name, value, n=1):
-        if not name in self.meters:
+        """
+        Args:
+            name ([type]): name of a AverageMeter
+            value ([type]): [description]
+            n (int, optional): [description]. Defaults to 1.
+        """
+        if name not in self.meters:
             self.meters[name] = AverageMeter()
         self.meters[name].update(value, n)
 
@@ -73,7 +76,6 @@ class AverageMeterSet:
 
 class AverageMeter:
     """Computes and stores the average and current value"""
-
     def __init__(self):
         self.reset()
 
@@ -112,25 +114,22 @@ class UnifLabelSampler(Sampler):
             N (int): size of returned iterator.
             images_lists: dict of key (target), value (list of data with this target)
     """
-
     def __init__(self, N, images_lists):
         self.N = N
         self.images_lists = images_lists
         self.indexes = self.generate_indexes_epoch()
 
         # pdb.set_trace()
-        
+
     def generate_indexes_epoch(self):
         size_per_pseudolabel = int(self.N / len(self.images_lists)) + 1
         res = np.zeros(size_per_pseudolabel * len(self.images_lists))
 
         for i in range(len(self.images_lists)):
-            indexes = np.random.choice(
-                self.images_lists[i],
-                size_per_pseudolabel,
-                replace=(len(self.images_lists[i]) <= size_per_pseudolabel)
-            )
-            res[i * size_per_pseudolabel: (i + 1) * size_per_pseudolabel] = indexes
+            indexes = np.random.choice(self.images_lists[i],
+                                       size_per_pseudolabel,
+                                       replace=(len(self.images_lists[i]) <= size_per_pseudolabel))
+            res[i * size_per_pseudolabel:(i + 1) * size_per_pseudolabel] = indexes
 
         np.random.shuffle(res)
         return res[:self.N].astype('int')

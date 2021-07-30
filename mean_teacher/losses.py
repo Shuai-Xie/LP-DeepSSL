@@ -17,8 +17,8 @@ def softmax_mse_loss(input_logits, target_logits):
     """Takes softmax on both sides and returns MSE loss
 
     Note:
-    - Returns the sum over all examples. Divide by the batch size afterwards
-      if you want the mean.
+    - Returns the sum over all examples. Divide by num_classes
+      Divide by the batch size afterwards if you want the mean.
     - Sends gradients to inputs but not the targets.
     """
     assert input_logits.size() == target_logits.size()
@@ -37,13 +37,14 @@ def softmax_kl_loss(input_logits, target_logits):
     - Sends gradients to inputs but not the targets.
     """
     assert input_logits.size() == target_logits.size()
-    input_log_softmax = F.log_softmax(input_logits, dim=1)
-    target_softmax = F.softmax(target_logits, dim=1)
+    input_log_softmax = F.log_softmax(input_logits, dim=1)  # log(q)
+    target_softmax = F.softmax(target_logits, dim=1) # p
     return F.kl_div(input_log_softmax, target_softmax, size_average=False)
 
 
 def symmetric_mse_loss(input1, input2):
-    """Like F.mse_loss but sends gradients to both directions
+    """Like F.mse_loss but sends gradients to both directions.
+        cuz input1/input2 are tensors with grad, while target in F.mse_loss has no grad.
 
     Note:
     - Returns the sum over all examples. Divide by the batch size afterwards

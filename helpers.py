@@ -12,7 +12,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
-from torch.autograd import Variable
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 import torchvision.datasets
@@ -36,10 +35,10 @@ def parse_dict_args(**kwargs):
         value = str(value)
         return key, value
 
-    kwargs_pairs = (to_cmdline_kwarg(key, value)
-                    for key, value in kwargs.items())
+    kwargs_pairs = (to_cmdline_kwarg(key, value) for key, value in kwargs.items())
     cmdline_args = list(sum(kwargs_pairs, ()))
     args = parser.parse_args(cmdline_args)
+
 
 def save_checkpoint(state, is_best, dirpath, epoch):
     filename = 'checkpoint.{}.ckpt'.format(epoch)
@@ -52,55 +51,64 @@ def save_checkpoint(state, is_best, dirpath, epoch):
         shutil.copyfile(checkpoint_path, best_path)
         print("--- checkpoint copied to %s ---" % best_path)
 
-def create_data_loaders(train_transformation,
-                        eval_transformation,
-                        datadir,
-                        args):
-    traindir = os.path.join(datadir, args.train_subdir)
-    evaldir = os.path.join(datadir, args.eval_subdir)
 
+def create_data_loaders(train_transformation, eval_transformation, datadir, args):
+    """create dataloaders wtih `train/eval transformations` and `datadir`
+    Returns:
+        [type]: [description]
+    """
+    traindir = os.path.join(datadir, args.train_subdir)  # train+val
+    evaldir = os.path.join(datadir, args.eval_subdir)  # test
+
+    # can only set 1 mode from 3 candidate modes
     assert_exactly_one([args.exclude_unlabeled, args.labeled_batch_size, args.fully_supervised])
 
+    # ref: torchvision.datasets.ImageFolder
     dataset = db_semisuper.DBSS(traindir, train_transformation)
 
-    if not args.fully_supervised and args.labels:
+    if not args.fully_supervised and args.labels:  # data-local/labels/cifar10/500_balanced_labels/10.txt
         with open(args.labels) as f:
-            labels = dict(line.split(' ') for line in f.read().splitlines())
+            labels = dict(line.split(' ') for line in f.read().splitlines())  # {img_name: cls_name}
+            # labels is a dict, cuz `data.relabel_dataset()` has query demands
         labeled_idxs, unlabeled_idxs = data.relabel_dataset(dataset, labels)
 
     if args.exclude_unlabeled:
-        sampler = SubsetRandomSampler(labeled_idxs)
+        sampler = SubsetRandomSampler(labeled_idxs)  # only labeled
         batch_sampler = BatchSampler(sampler, args.batch_size, drop_last=True)
     elif args.fully_supervised:
-        sampler = SubsetRandomSampler(range(len(dataset)))
+        sampler = SubsetRandomSampler(range(len(dataset)))  # all data
         dataset.labeled_idx = range(len(dataset))
         batch_sampler = BatchSampler(sampler, args.batch_size, drop_last=True)
-    elif args.labeled_batch_size:
+    elif args.labeled_batch_size:  # semi, two stream: label + unlabel
         batch_sampler = data.TwoStreamBatchSampler(
-            unlabeled_idxs, labeled_idxs, args.batch_size, args.labeled_batch_size)
+            unlabeled_idxs,
+            labeled_idxs,
+            args.batch_size,
+            args.labeled_batch_size,
+        )
     else:
         assert False, "labeled batch size {}".format(args.labeled_batch_size)
 
     train_loader = torch.utils.data.DataLoader(dataset,
                                                batch_sampler=batch_sampler,
                                                num_workers=args.workers,
-                                               pin_memory=True)
+                                               pin_memory=False)  # False cuz torch warnings
 
-    train_loader_noshuff = torch.utils.data.DataLoader(dataset,
+    train_loader_noshuff = torch.utils.data.DataLoader(
+        dataset,
         batch_size=args.batch_size * 2,
         shuffle=False,
-        num_workers= args.workers,  # Needs images twice as fast
-        pin_memory=True,
+        num_workers=args.workers,  # Needs images twice as fast
+        pin_memory=False,
         drop_last=False)
 
     eval_dataset = torchvision.datasets.ImageFolder(evaldir, eval_transformation)
-    eval_loader = torch.utils.data.DataLoader(
-        eval_dataset,
-        batch_size=args.test_batch_size,
-        shuffle=False,
-        num_workers=args.workers,
-        pin_memory=True,
-        drop_last=False)
+    eval_loader = torch.utils.data.DataLoader(eval_dataset,
+                                              batch_size=args.test_batch_size,
+                                              shuffle=False,
+                                              num_workers=args.workers,
+                                              pin_memory=False,
+                                              drop_last=False)
 
     return train_loader, eval_loader, train_loader_noshuff, dataset
 
@@ -111,22 +119,24 @@ def update_ema_variables(model, ema_model, alpha, global_step):
     for ema_param, param in zip(ema_model.parameters(), model.parameters()):
         ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
 
-def create_model(num_classes,args,ema=False):
 
+def create_model(num_classes, args, ema=False):
     model_factory = architectures.__dict__[args.arch]
-    model_params = dict(pretrained=args.pretrained, num_classes=num_classes, isL2 = args.isL2, double_output = args.double_output)
+    model_params = dict(pretrained=args.pretrained,
+                        num_classes=num_classes,
+                        isL2=args.isL2,
+                        double_output=args.double_output)
     model = model_factory(**model_params)
     model = nn.DataParallel(model).cuda()
 
     if ema:
         for param in model.parameters():
-            param.detach_()
-
+            param.detach_()  # require_grad=False
     return model
 
-def train(train_loader, model, optimizer, epoch, global_step, args, ema_model = None):
 
-    class_criterion = nn.CrossEntropyLoss( ignore_index=NO_LABEL, reduction='none').cuda()
+def train(train_loader, model, optimizer, epoch, global_step, args, ema_model=None):
+    class_criterion = nn.CrossEntropyLoss(ignore_index=NO_LABEL, reduction='none').cuda()
     if args.consistency_type == 'mse':
         consistency_criterion = losses.softmax_mse_loss
     elif args.consistency_type == 'kl':
@@ -137,10 +147,7 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model = 
 
     meters = AverageMeterSet()
 
-    if ema_model is not None:
-        isMT = True
-    else:
-        isMT = False
+    isMT = ema_model is not None
 
     # switch to train mode
     model.train()
@@ -152,7 +159,7 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model = 
     for i, (batch_input, target, weight, c_weight) in enumerate(train_loader):
         if isMT:
             input = batch_input[0]
-            ema_input = batch_input[1]
+            ema_input = batch_input[1]  # ema input
         else:
             input = batch_input
 
@@ -163,10 +170,10 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model = 
 
         meters.update('lr', optimizer.param_groups[0]['lr'])
 
-        input_var = torch.autograd.Variable(input)
-        target_var = torch.autograd.Variable(target.cuda(async=True))
-        weight_var = torch.autograd.Variable(weight.cuda(async=True))
-        c_weight_var = torch.autograd.Variable(c_weight.cuda(async=True))
+        input_var = torch.autograd.Variable(input.cuda())
+        target_var = torch.autograd.Variable(target.cuda())
+        weight_var = torch.autograd.Variable(weight.cuda())
+        c_weight_var = torch.autograd.Variable(c_weight.cuda())
 
         minibatch_size = len(target_var)
         labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
@@ -174,14 +181,15 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model = 
         meters.update('labeled_minibatch_size', labeled_minibatch_size)
 
         if isMT:
-            ema_input_var = torch.autograd.Variable(ema_input, volatile=True)
-            ema_logit, _ , _ = ema_model(ema_input_var)
+            ema_input_var = torch.autograd.Variable(ema_input.cuda())
+            ema_logit, _, _ = ema_model(ema_input_var)
             class_logit, cons_logit, _ = model(input_var)
 
-            ema_logit = Variable(ema_logit.detach().data, requires_grad=False)
+            ema_logit = torch.autograd.Variable(ema_logit.detach().data, requires_grad=False)
 
             if args.logit_distance_cost >= 0:
-                res_loss = args.logit_distance_cost * residual_logit_criterion(class_logit, cons_logit) / minibatch_size
+                res_loss = args.logit_distance_cost * residual_logit_criterion(
+                    class_logit, cons_logit) / minibatch_size
                 meters.update('res_loss', res_loss.item())
             else:
                 res_loss = 0
@@ -191,28 +199,29 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model = 
             meters.update('ema_class_loss', ema_class_loss.item())
 
             if args.consistency:
-                consistency_weight = get_current_consistency_weight(epoch,args)
+                consistency_weight = get_current_consistency_weight(epoch, args)
                 meters.update('cons_weight', consistency_weight)
-                consistency_loss = consistency_weight * consistency_criterion(cons_logit, ema_logit) / minibatch_size
+                consistency_loss = consistency_weight * consistency_criterion(
+                    cons_logit, ema_logit) / minibatch_size
                 meters.update('cons_loss', consistency_loss.item())
             else:
                 consistency_loss = 0
                 meters.update('cons_loss', 0)
 
-
         else:
             class_logit, _ = model(input_var)
 
-        loss = class_criterion(class_logit, target_var) 
+        loss = class_criterion(class_logit, target_var)
         loss = loss * weight_var.float()
         loss = loss * c_weight_var
         loss = loss.sum() / minibatch_size
         meters.update('class_loss', loss.item())
 
-        if isMT:    
+        if isMT:
             loss = loss + consistency_loss + res_loss
 
-        assert not (np.isnan(loss.item()) or loss.item() > 1e5), 'Loss explosion: {}'.format(loss.item())
+        assert not (np.isnan(loss.item()) or loss.item() > 1e5), 'Loss explosion: {}'.format(
+            loss.item())
         meters.update('loss', loss.item())
 
         prec1, prec5 = accuracy(class_logit.data, target_var.data, topk=(1, 5))
@@ -241,34 +250,29 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model = 
         end = time.time()
 
         if i % 100 == 0:
-            print(
-                'Epoch: [{0}][{1}/{2}]'
-                'LR {meters[lr]:.4f}\t'
-                'Time {meters[batch_time]:.3f}\t'
-                'Data {meters[data_time]:.3f}\t'
-                'Class {meters[class_loss]:.4f}\t'
-                'Prec@1 {meters[top1]:.3f}\t'
-                'Prec@5 {meters[top5]:.3f}'.format(
-                    epoch, i, len(train_loader), meters=meters))
+            print('Epoch: [{0}][{1}/{2}]'
+                  'LR {meters[lr]:.4f}\t'
+                  'Time {meters[batch_time]:.3f}\t'
+                  'Data {meters[data_time]:.3f}\t'
+                  'Class {meters[class_loss]:.4f}\t'
+                  'Prec@1 {meters[top1]:.3f}\t'
+                  'Prec@5 {meters[top5]:.3f}'.format(epoch, i, len(train_loader), meters=meters))
+
+    return meters, global_step
 
 
-    return meters , global_step
-
-
-def validate(eval_loader, model, global_step, epoch, isMT = False):
-    class_criterion = nn.CrossEntropyLoss(size_average=False, ignore_index=NO_LABEL).cuda()
-    meters = AverageMeterSet()
+@torch.no_grad()
+def validate(eval_loader, model, global_step, epoch, isMT=False):
+    class_criterion = nn.CrossEntropyLoss(reduction='sum', ignore_index=NO_LABEL).cuda()
+    meters = AverageMeterSet()  # use reduction='sum', cuz divide by minibatch_size later
 
     # switch to evaluate mode
     model.eval()
 
     end = time.time()
-    for i, (input, target) in enumerate(eval_loader):
+    for i, (input_var, target_var) in enumerate(eval_loader):
+        input_var, target_var = input_var.cuda(), target_var.cuda()
         meters.update('data_time', time.time() - end)
-
-        input_var = torch.autograd.Variable(input, volatile=True)
-        target_var = torch.autograd.Variable(target.cuda(async=True), volatile=True)
-
         minibatch_size = len(target_var)
         labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
         assert labeled_minibatch_size > 0
@@ -279,6 +283,7 @@ def validate(eval_loader, model, global_step, epoch, isMT = False):
             output1, _, _ = model(input_var)
         else:
             output1, _ = model(input_var)
+
         class_loss = class_criterion(output1, target_var) / minibatch_size
 
         # measure accuracy and record loss
@@ -293,14 +298,14 @@ def validate(eval_loader, model, global_step, epoch, isMT = False):
         meters.update('batch_time', time.time() - end)
         end = time.time()
 
-    print(' * Prec@1 {top1.avg:.3f}\tPrec@5 {top5.avg:.3f}'
-          .format(top1=meters['top1'], top5=meters['top5']))
+    print(' * Prec@1 {top1.avg:.3f}\tPrec@5 {top5.avg:.3f}'.format(top1=meters['top1'],
+                                                                   top5=meters['top5']))
 
     return meters['top1'].avg, meters['top5'].avg
 
 
 def adjust_learning_rate(optimizer, epoch, step_in_epoch, total_steps_in_epoch, args):
-    
+
     lr = args.lr
     epoch = epoch + step_in_epoch / total_steps_in_epoch
 
@@ -321,22 +326,25 @@ def get_current_consistency_weight(epoch, args):
     return args.consistency * ramps.sigmoid_rampup(epoch, args.consistency_rampup)
 
 
-def accuracy(output, target, topk=(1,)):
+def accuracy(output, target, topk=(1, )):
     """Computes the precision@k for the specified values of k"""
     maxk = max(topk)
     labeled_minibatch_size = max(target.ne(NO_LABEL).sum(), 1e-8)
+    # print(f'label ratio: {labeled_minibatch_size}/{len(target)}')
 
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
+    _, pred = output.topk(maxk, 1, True, True)  # (B,5)
+    pred = pred.t()  # (5,B)
+    target = target.view(1, -1).expand_as(pred)  # (1,B) -> (5,B)
+    correct = pred.eq(target)  #  (5,B)
 
     res = []
-    for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+    for k in topk:  # (1, 5)
+        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / float(labeled_minibatch_size)))
     return res
 
-def extract_features(train_loader,model, isMT = False):
+
+def extract_features(train_loader, model, isMT=False):
     model.eval()
     embeddings_all, labels_all, index_all = [], [], []
 
@@ -352,9 +360,9 @@ def extract_features(train_loader,model, isMT = False):
         y = torch.autograd.Variable(y.cuda(async=True))
 
         if isMT:
-            _ , _ , feats = model(X)
+            _, _, feats = model(X)
         else:
-            _ , feats = model(X)
+            _, feats = model(X)
 
         embeddings_all.append(feats.data.cpu())
         labels_all.append(y.data.cpu())
@@ -363,9 +371,9 @@ def extract_features(train_loader,model, isMT = False):
     labels_all = torch.cat(labels_all).numpy()
     return (embeddings_all, labels_all)
 
-def load_args(args, isMT = False):
 
-    label_dir = 'data-local/'
+def load_args(args, isMT=False):
+    label_dir = 'data-local'
 
     if args.dataset == "cifar100":
         args.batch_size = 128
@@ -379,7 +387,8 @@ def load_args(args, isMT = False):
         args.logit_distance_cost = 0.01
         args.consistency = 100.0
         args.weight_decay = 2e-4
-        args.labels = '%s/labels/%s/%d_balanced_labels/%d.txt' % (label_dir,args.dataset,args.num_labeled,args.label_split)
+        args.labels = '%s/labels/%s/%d_balanced_labels/%d.txt' % (
+            label_dir, args.dataset, args.num_labeled, args.label_split)
         args.arch = 'cifar_cnn'
 
     elif args.dataset == "cifar10":
@@ -394,7 +403,8 @@ def load_args(args, isMT = False):
         args.weight_decay = 2e-4
         args.arch = 'cifar_cnn'
 
-        args.labels = '%s/labels/%s/%d_balanced_labels/%d.txt' % (label_dir,args.dataset,args.num_labeled,args.label_split)
+        args.labels = '%s/labels/%s/%d_balanced_labels/%d.txt' % (
+            label_dir, args.dataset, args.num_labeled, args.label_split)
 
     elif args.dataset == "miniimagenet":
 
@@ -413,9 +423,9 @@ def load_args(args, isMT = False):
         args.logit_distance_cost = 0.01
         args.consistency = 100.0
         args.weight_decay = 2e-4
-        args.labels = '%s/labels/%s/%d_balanced_labels/%d.txt' % (label_dir,args.dataset,args.num_labeled,args.label_split)
+        args.labels = '%s/labels/%s/%d_balanced_labels/%d.txt' % (
+            label_dir, args.dataset, args.num_labeled, args.label_split)
         args.arch = 'resnet18'
-
 
     else:
         sys.exit('Undefined dataset!')
@@ -426,3 +436,11 @@ def load_args(args, isMT = False):
         args.double_output = False
 
     return args
+
+
+import json
+
+
+def write_args(args: dict, filepath: str):
+    with open(filepath, 'w') as f:
+        json.dump(args, f, indent=2)  # auto line-break

@@ -25,7 +25,6 @@ import scipy.stats
 import pickle
 
 
-
 def has_file_allowed_extension(filename, extensions):
     """Checks if a file is an allowed extension.
 
@@ -70,6 +69,7 @@ def make_dataset(dir, class_to_idx, extensions):
     return images
 
 
+# ref: torchvision.datasets.ImageFolder
 class DatasetFolder(data.Dataset):
     """A generic data loader where the samples are arranged in this way: ::
 
@@ -97,13 +97,12 @@ class DatasetFolder(data.Dataset):
         samples (list): List of (sample path, class_index) tuples
         targets (list): The class_index value for each image in the dataset
     """
-
     def __init__(self, root, loader, extensions, transform=None, target_transform=None):
         classes, class_to_idx = self._find_classes(root)
         samples = make_dataset(root, class_to_idx, extensions)
         if len(samples) == 0:
-            raise(RuntimeError("Found 0 files in subfolders of: " + root + "\n"
-                               "Supported extensions are: " + ",".join(extensions)))
+            raise (RuntimeError("Found 0 files in subfolders of: " + root + "\n"
+                                "Supported extensions are: " + ",".join(extensions)))
 
         self.root = root
         self.loader = loader
@@ -112,12 +111,12 @@ class DatasetFolder(data.Dataset):
         self.classes = classes
         self.class_to_idx = class_to_idx
         self.samples = samples
-        self.targets = [s[1] for s in samples]
+        self.targets = [s[1] for s in samples]  # s = (sample path, class_index)
 
         self.transform = transform
         self.target_transform = target_transform
 
-        imfile_name = '%s/images.pkl' % self.root
+        imfile_name = '%s/images.pkl' % self.root  # train_subdir/images.pkl
         if os.path.isfile(imfile_name):
             with open(imfile_name, 'rb') as f:
                 self.images = pickle.load(f)
@@ -150,26 +149,30 @@ class DatasetFolder(data.Dataset):
         """
         Args:
             index (int): Index
+            attrs from subclass: p_labels, p_weights, class_weights
 
         Returns:
-            tuple: (sample, target) where target is class_index of the target class.
+            tuple: (sample, target, weight, c_weight) 
+                  target: class_index of the target class
+                  weight: pseudo sample weight of this sample
+                c_weight: class weight of this sample
         """
-        
+
         path, target = self.samples[index]
 
         if (index not in self.labeled_idx):
-            target = self.p_labels[index]
+            target = self.p_labels[index]  # pseudo label
 
-        weight = self.p_weights[index]
+        weight = self.p_weights[index]  # pseudo weight
 
         if self.images is not None:
-            sample = Image.fromarray(self.images[index,:,:,:])
+            sample = Image.fromarray(self.images[index, :, :, :])  # read from pkl
         else:
-            sample = self.loader(path)
+            sample = self.loader(path)  # read from img
 
         if self.transform is not None:
             sample = self.transform(sample)
-        
+
         c_weight = self.class_weights[target]
 
         return sample, target, weight, c_weight
@@ -182,9 +185,12 @@ class DatasetFolder(data.Dataset):
         fmt_str += '    Number of datapoints: {}\n'.format(self.__len__())
         fmt_str += '    Root Location: {}\n'.format(self.root)
         tmp = '    Transforms (if any): '
-        fmt_str += '{0}{1}\n'.format(tmp, self.transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
+        fmt_str += '{0}{1}\n'.format(tmp,
+                                     self.transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
         tmp = '    Target Transforms (if any): '
-        fmt_str += '{0}{1}'.format(tmp, self.target_transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
+        fmt_str += '{0}{1}'.format(
+            tmp,
+            self.target_transform.__repr__().replace('\n', '\n' + ' ' * len(tmp)))
         return fmt_str
 
 
@@ -211,7 +217,7 @@ def default_loader(path):
     from torchvision import get_image_backend
     if get_image_backend() == 'accimage':
         return accimage_loader(path)
-    else:
+    else:  # default is PIL
         return pil_loader(path)
 
 
@@ -239,26 +245,30 @@ class DBSS(DatasetFolder):
         class_to_idx (dict): Dict with items (class_name, class_index).
         imgs (list): List of (image path, class_index) tuples
     """
-    def __init__(self, root, transform=None, target_transform=None,
-                 loader=default_loader):
-        super(DBSS, self).__init__(root, loader, IMG_EXTENSIONS,
-                                          transform = transform,
-                                          target_transform = target_transform)
+    def __init__(self, root, transform=None, target_transform=None, loader=default_loader):
+        super(DBSS, self).__init__(root,
+                                   loader,
+                                   IMG_EXTENSIONS,
+                                   transform=transform,
+                                   target_transform=target_transform)
         self.imgs = self.samples
+
         self.pos_list = dict()
         self.pos_w = dict()
-        self.labeled_idx = []
-        self.unlabeled_idx = []
-        self.all_labels = []
         self.pos_dist = dict()
 
+        self.labeled_idx = []
+        self.unlabeled_idx = []
+        self.all_labels = []  # save ori label idx
+
+        # pseudo weights and cls weights
         self.p_labels = []
-        self.p_weights = np.ones((len(self.imgs),))
-        self.class_weights = np.ones((len(self.classes),),dtype = np.float32)
+        self.p_weights = np.ones((len(self.imgs), ))  # default 1
+        self.class_weights = np.ones((len(self.classes), ), dtype=np.float32)  # default 1
 
-        self.images_lists = [[] for i in range(len(self.classes))]
+        self.images_lists = [[] for i in range(len(self.classes))]  # each cls has a list
 
-    def update_plabels(self, X, k = 50, max_iter = 20):
+    def update_plabels(self, X, k=50, max_iter=20):
 
         print('Updating pseudo-labels...')
         alpha = 0.99
@@ -266,16 +276,15 @@ class DBSS(DatasetFolder):
         labeled_idx = np.asarray(self.labeled_idx)
         unlabeled_idx = np.asarray(self.unlabeled_idx)
 
-        
         # kNN search for the graph
         d = X.shape[1]
         res = faiss.StandardGpuResources()
         flat_config = faiss.GpuIndexFlatConfig()
         flat_config.device = int(torch.cuda.device_count()) - 1
-        index = faiss.GpuIndexFlatIP(res,d,flat_config)   # build the index
+        index = faiss.GpuIndexFlatIP(res, d, flat_config)  # build the index
 
         normalize_L2(X)
-        index.add(X) 
+        index.add(X)
         N = X.shape[0]
         Nidx = index.ntotal
 
@@ -285,41 +294,42 @@ class DBSS(DatasetFolder):
         print('kNN Search done in %d seconds' % elapsed)
 
         # Create the graph
-        D = D[:,1:] ** 3
-        I = I[:,1:]
+        D = D[:, 1:]**3
+        I = I[:, 1:]
         row_idx = np.arange(N)
-        row_idx_rep = np.tile(row_idx,(k,1)).T
-        W = scipy.sparse.csr_matrix((D.flatten('F'), (row_idx_rep.flatten('F'), I.flatten('F'))), shape=(N, N))
+        row_idx_rep = np.tile(row_idx, (k, 1)).T
+        W = scipy.sparse.csr_matrix((D.flatten('F'), (row_idx_rep.flatten('F'), I.flatten('F'))),
+                                    shape=(N, N))
         W = W + W.T
 
         # Normalize the graph
         W = W - scipy.sparse.diags(W.diagonal())
-        S = W.sum(axis = 1)
-        S[S==0] = 1
-        D = np.array(1./ np.sqrt(S))
+        S = W.sum(axis=1)
+        S[S == 0] = 1
+        D = np.array(1. / np.sqrt(S))
         D = scipy.sparse.diags(D.reshape(-1))
         Wn = D * W * D
 
         # Initiliaze the y vector for each class (eq 5 from the paper, normalized with the class size) and apply label propagation
-        Z = np.zeros((N,len(self.classes)))
+        Z = np.zeros((N, len(self.classes)))
         A = scipy.sparse.eye(Wn.shape[0]) - alpha * Wn
         for i in range(len(self.classes)):
-            cur_idx = labeled_idx[np.where(labels[labeled_idx] ==i)]
-            y = np.zeros((N,))
+            cur_idx = labeled_idx[np.where(labels[labeled_idx] == i)]
+            y = np.zeros((N, ))
             y[cur_idx] = 1.0 / cur_idx.shape[0]
             f, _ = scipy.sparse.linalg.cg(A, y, tol=1e-6, maxiter=max_iter)
-            Z[:,i] = f
+            Z[:, i] = f
 
         # Handle numberical errors
-        Z[Z < 0] = 0 
+        Z[Z < 0] = 0
 
         # Compute the weight for each instance based on the entropy (eq 11 from the paper)
-        probs_l1 = F.normalize(torch.tensor(Z),1).numpy()
-        probs_l1[probs_l1 <0] = 0
+        probs_l1 = F.normalize(torch.tensor(Z), 1).numpy()
+        probs_l1[probs_l1 < 0] = 0
         entropy = scipy.stats.entropy(probs_l1.T)
         weights = 1 - entropy / np.log(len(self.classes))
         weights = weights / np.max(weights)
-        p_labels = np.argmax(probs_l1,1)
+        p_labels = np.argmax(probs_l1, 1)
 
         # Compute the accuracy of pseudolabels for statistical purposes
         correct_idx = (p_labels == labels)

@@ -9,6 +9,8 @@ import matplotlib.image
 import numpy as np
 
 
+# sys.argv[1]: data-local/workdir
+# sys.argv[2]: data-local/images/cifar/cifar10/by-image/
 work_dir = os.path.abspath(sys.argv[1])
 test_dir = os.path.abspath(os.path.join(sys.argv[2], 'test'))
 train_dir = os.path.abspath(os.path.join(sys.argv[2], 'train+val'))
@@ -33,8 +35,10 @@ def unpack_data_file(source_file_name, target_dir, start_idx):
     return len(data['data'])
 
 
+# load class names from batches.meta
 label_names = load_file('batches.meta')['label_names']
 print("Found {} label names: {}".format(len(label_names), ", ".join(label_names)))
+# Found 10 label names: airplane, automobile, bird, cat, deer, dog, frog, horse, ship, truck
 
 start_idx = 0
 for source_file_path, _ in cifar10.test_list:

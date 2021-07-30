@@ -31,11 +31,11 @@ def create_parser():
                         help='the subdirectory inside the data directory that contains the training data')
     parser.add_argument('--eval-subdir', type=str, default='test',
                         help='the subdirectory inside the data directory that contains the evaluation data')
-    parser.add_argument('--label-split', default=10, type=int, metavar='FILE',
+    parser.add_argument('--label-split', default=10, type=int, metavar='FILE',  # e.g. cifar10 00-19, 20 exps, we choose 10 here
                         help='list of image labels (default: based on directory structure)')
     parser.add_argument('--exclude-unlabeled', default=False, type=str2bool, metavar='BOOL',
                         help='exclude unlabeled examples from the training set')
-    parser.add_argument('-j', '--workers', default=2, type=int, metavar='N',
+    parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                         help='number of data loading workers (default: 2)')
     parser.add_argument('--epochs', default=180, type=int, metavar='N',
                         help='number of total epochs to run')
@@ -43,7 +43,7 @@ def create_parser():
                         help='manual epoch number (useful on restarts)')
     parser.add_argument('-b', '--batch-size', default=100, type=int,
                         metavar='N', help='mini-batch size (default: 256)')
-    parser.add_argument('--labeled-batch-size', default=None, type=int,
+    parser.add_argument('--labeled-batch-size', default=None, type=int,  # note labeled samples in a batch
                         metavar='N', help="labeled examples per minibatch (default: no constrain)")
     parser.add_argument('--lr', '--learning-rate', default=0.05, type=float,
                         metavar='LR', help='max learning rate')
@@ -59,7 +59,8 @@ def create_parser():
                         help='use nesterov momentum', metavar='BOOL')
     parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
                         metavar='W', help='weight decay (default: 1e-4)')
-    parser.add_argument('--ema-decay', default=0.999, type=float, metavar='ALPHA',
+    # unsupervised params
+    parser.add_argument('--ema-decay', default=0.999, type=float, metavar='ALPHA',  # EMA alpha=0.999
                         help='ema variable decay rate (default: 0.999)')
     parser.add_argument('--consistency', default=None, type=float, metavar='WEIGHT',
                         help='use consistency loss with given weight (default: None)')
@@ -89,7 +90,7 @@ def create_parser():
     parser.add_argument('--fully-supervised', default=False, type=str2bool, metavar='BOOL',
                         help='is fully-supervised')
     parser.add_argument('--isL2', default=True, type=str2bool, metavar='BOOL',
-                        help='is l2 normalized features')
+                        help='is l2 normalized features')  # note paper said L2-norm harms MT
     parser.add_argument('--num-labeled', type=int, default=1000,
                         help='number of labeled instances')
     parser.add_argument('--test-mode', type=str, default='',
