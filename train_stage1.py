@@ -90,7 +90,6 @@ def main():
 
     # args.epochs = 10  # debug
     for epoch in range(args.start_epoch, args.epochs):
-        start_time = time.time()
         # Train for one epoch
         if args.isMT:
             train_meter, global_step = train(

@@ -1,28 +1,22 @@
 # Authors: A. Iscen, G. Tolias, Y. Avrithis, O. Chum. 2018.
 
-import torch.utils.data as data
-
-from PIL import Image
-
 import os
 import os.path
-import sys
 import pdb
-
-import numpy as np
+import pickle
+import sys
 import time
 
 import faiss
-from faiss import normalize_L2
+import numpy as np
+import scipy
+import scipy.stats
+import torch
+import torch.utils.data as data
+from PIL import Image
 
 from .diffusion import *
-import scipy
-import torch.nn.functional as F
-import torch
-
-import scipy.stats
-
-import pickle
+from utils.misc import normalize
 
 
 def has_file_allowed_extension(filename, extensions):
@@ -152,7 +146,7 @@ class DatasetFolder(data.Dataset):
             attrs from subclass: p_labels, p_weights, class_weights
 
         Returns:
-            tuple: (sample, target, weight, c_weight) 
+            tuple: (sample, target, weight, c_weight)
                   target: class_index of the target class
                   weight: pseudo sample weight of this sample
                 c_weight: class weight of this sample
@@ -264,86 +258,103 @@ class DBSS(DatasetFolder):
         # pseudo weights and cls weights
         self.p_labels = []
         self.p_weights = np.ones((len(self.imgs), ))  # default 1
-        self.class_weights = np.ones((len(self.classes), ), dtype=np.float32)  # default 1
+        self.class_weights = np.ones((len(self.classes), ),
+                                     dtype=np.float32)  # default cls_weight = 1
 
         self.images_lists = [[] for i in range(len(self.classes))]  # each cls has a list
 
     def update_plabels(self, X, k=50, max_iter=20):
+        """update pseudo lables
+
+        Args:
+            X (np.ndarray): feature vectors (n,128)
+            k (int, optional): neighborhood size. Defaults to 50. [hyperparam]
+            max_iter (int, optional): iterate times to get Z. Defaults to 20. [hyperparam]
+
+        Returns:
+            [type]: [description]
+        """
 
         print('Updating pseudo-labels...')
         alpha = 0.99
-        labels = np.asarray(self.all_labels)
-        labeled_idx = np.asarray(self.labeled_idx)
-        unlabeled_idx = np.asarray(self.unlabeled_idx)
 
-        # kNN search for the graph
-        d = X.shape[1]
+        # label/unlabel index
+        labels = np.asarray(self.all_labels)  # (N,)
+        labeled_idx = np.asarray(self.labeled_idx)  # (L,)
+        unlabeled_idx = np.asarray(self.unlabeled_idx)  # (N-L,)
+
+        # kNN search for the graph with faiss
+        N, d = X.shape  # note this N is the set of samples to be propapated, not len(labels) necessarily
+        # build index
         res = faiss.StandardGpuResources()
         flat_config = faiss.GpuIndexFlatConfig()
         flat_config.device = int(torch.cuda.device_count()) - 1
         index = faiss.GpuIndexFlatIP(res, d, flat_config)  # build the index
-
-        normalize_L2(X)
+        faiss.normalize_L2(X)  # note L2 norm, then L2 = IP = cos similarity
         index.add(X)
-        N = X.shape[0]
-        Nidx = index.ntotal
-
+        # search index
         c = time.time()
-        D, I = index.search(X, k + 1)
+        D, I = index.search(X, k + 1)  # use k+1, cuz the 1st nearest is itself
         elapsed = time.time() - c
         print('kNN Search done in %d seconds' % elapsed)
 
         # Create the graph
-        D = D[:, 1:]**3
+        D = D[:, 1:]**3  # note (eq 9)
         I = I[:, 1:]
         row_idx = np.arange(N)
-        row_idx_rep = np.tile(row_idx, (k, 1)).T
-        W = scipy.sparse.csr_matrix((D.flatten('F'), (row_idx_rep.flatten('F'), I.flatten('F'))),
-                                    shape=(N, N))
-        W = W + W.T
+        row_idx_rep = np.tile(row_idx, (k, 1)).T  # (N, k), row index repeat
+        # sparse weight matrix, k/N has affinity weights
+        W = scipy.sparse.csr_matrix(
+            (
+                D.flatten('F'),  # data, 'F' column-major flatten
+                (row_idx_rep.flatten('F'), I.flatten('F'))  # (row_idx, col_idx)
+            ),
+            shape=(N, N))
+        W = W + W.T  # symmetric afffinity matrix
 
         # Normalize the graph
-        W = W - scipy.sparse.diags(W.diagonal())
+        W = W - scipy.sparse.diags(W.diagonal())  # W_ii = 0
         S = W.sum(axis=1)
-        S[S == 0] = 1
-        D = np.array(1. / np.sqrt(S))
+        S[S == 0] = 1  # if sum(sim)=0, attentioned w_ij = w_ij, cuz the whole impact equals zero.
+        D = np.array(1. / np.sqrt(S))  # D^(-1/2)
         D = scipy.sparse.diags(D.reshape(-1))
-        Wn = D * W * D
+        Wn = D * W * D  # normalized weight
 
-        # Initiliaze the y vector for each class (eq 5 from the paper, normalized with the class size) and apply label propagation
-        Z = np.zeros((N, len(self.classes)))
-        A = scipy.sparse.eye(Wn.shape[0]) - alpha * Wn
-        for i in range(len(self.classes)):
-            cur_idx = labeled_idx[np.where(labels[labeled_idx] == i)]
+        # Initiliaze the y vector for each class (eq 5, normalized with the class size) and apply label propagation
+        C = len(self.classes)
+        Z = np.zeros((N, C))
+        A = scipy.sparse.eye(Wn.shape[0]) - alpha * Wn  # (I-αW)
+        for i in range(C):
+            cur_idx = labeled_idx[np.where(labels[labeled_idx] == i)]  # sample idx with cls=i
             y = np.zeros((N, ))
-            y[cur_idx] = 1.0 / cur_idx.shape[0]
+            y[cur_idx] = 1.0 / cur_idx.shape[0]  # cls i samples, cls_weight
+            # note solve (I-αW)Z = Y (eq 10)
             f, _ = scipy.sparse.linalg.cg(A, y, tol=1e-6, maxiter=max_iter)
-            Z[:, i] = f
+            Z[:, i] = f  # get the propagated matrix of each class
 
         # Handle numberical errors
         Z[Z < 0] = 0
 
-        # Compute the weight for each instance based on the entropy (eq 11 from the paper)
-        probs_l1 = F.normalize(torch.tensor(Z), 1).numpy()
+        # Compute the weight for each instance based on the entropy (eq 11)
+        probs_l1 = normalize(Z, order=1, axis=1)  # use l1-norm so that sum(probs)=1
         probs_l1[probs_l1 < 0] = 0
-        entropy = scipy.stats.entropy(probs_l1.T)
-        weights = 1 - entropy / np.log(len(self.classes))
-        weights = weights / np.max(weights)
+        entropy = scipy.stats.entropy(probs_l1, axis=1)  # (N,c) -> (N,)
+        weights = 1 - entropy / np.log(C)  # (eq 11) where log(c) is the max entropy
+        weights = weights / np.max(weights)  # max_val normalize
         p_labels = np.argmax(probs_l1, 1)
 
-        # Compute the accuracy of pseudolabels for statistical purposes
-        correct_idx = (p_labels == labels)
-        acc = correct_idx.mean()
+        # Compute the accuracy of pseudo labels for statistical purposes
+        # note this line can be placed after line 350, place here is more strict
+        acc = (p_labels == labels).mean()
 
-        p_labels[labeled_idx] = labels[labeled_idx]
+        p_labels[labeled_idx] = labels[labeled_idx]  # GT labeled still use GT
         weights[labeled_idx] = 1.0
 
-        self.p_weights = weights.tolist()
+        self.p_weights = weights.tolist()  # pseudo sample weights
         self.p_labels = p_labels
 
-        # Compute the weight for each class
-        for i in range(len(self.classes)):
-            cur_idx = np.where(np.asarray(self.p_labels) == i)[0]
-            self.class_weights[i] = (float(labels.shape[0]) / len(self.classes)) / cur_idx.size
+        # Compute the weight for each class, c_i = 1/C * N / N_c
+        for i in range(C):
+            self.class_weights[i] = (labels.shape[0] / C) / float((self.p_labels == i).sum())
 
         return acc

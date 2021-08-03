@@ -89,7 +89,8 @@ class TransformOnce:
 
 
 def relabel_dataset(dataset: lp.db_semisuper.DBSS, labels: dict):
-    """relabel the unlabeled images based on the labeled images
+    """relabel label/unlabel images and set below attrs of dataset.
+        all_labels, p_labels, labeled_idx, unlabeled_idx
 
     Args:
         dataset (lp.db_semisuper.DBSS): a subclass of DatasetFolder

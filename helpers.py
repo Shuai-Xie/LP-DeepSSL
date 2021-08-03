@@ -22,6 +22,7 @@ from mean_teacher.data import NO_LABEL
 from mean_teacher.utils import *
 
 import lp.db_semisuper as db_semisuper
+from tqdm import tqdm
 
 
 def parse_dict_args(**kwargs):
@@ -53,9 +54,24 @@ def save_checkpoint(state, is_best, dirpath, epoch):
 
 
 def create_data_loaders(train_transformation, eval_transformation, datadir, args):
-    """create dataloaders wtih `train/eval transformations` and `datadir`
+    """create dataloaders with args and train/eval transformations
+        args.
+            exclude_unlabeled: only use labeled data, lower bound
+            fully_supervised: use total data, upper bound
+            labeled_batch_size: number of labeled samples in a batch, semi-supervised methods
+                use `mean_teacher.data.TwoStreamBatchSampler()` to merge a batch samples from labeled and unlabeled data.
+
+    Args:
+        train_transformation ([type]): transforms.Compose([..])
+        eval_transformation ([type]): transforms.Compose([..])
+        datadir ([type]): dataset image dir
+        args ([type]): parsed args
+
     Returns:
-        [type]: [description]
+        train_loader: trainset dataloader
+        eval_loader: evalset dataloader
+        train_loader_noshuff: a noshuff dataloader using total data with twice batchsize.
+        dataset: lp.db_semisuper.DBSS, which includes `p_labels`, `p_weights` and `class_weights`.
     """
     traindir = os.path.join(datadir, args.train_subdir)  # train+val
     evaldir = os.path.join(datadir, args.eval_subdir)  # test
@@ -89,6 +105,7 @@ def create_data_loaders(train_transformation, eval_transformation, datadir, args
     else:
         assert False, "labeled batch size {}".format(args.labeled_batch_size)
 
+    # use different batch sampler
     train_loader = torch.utils.data.DataLoader(dataset,
                                                batch_sampler=batch_sampler,
                                                num_workers=args.workers,
@@ -114,10 +131,10 @@ def create_data_loaders(train_transformation, eval_transformation, datadir, args
 
 
 def update_ema_variables(model, ema_model, alpha, global_step):
-    # Use the true average until the exponential average is more correct
+    # note Use the true average until the exponential average is more correct
     alpha = min(1 - 1 / (global_step + 1), alpha)
     for ema_param, param in zip(ema_model.parameters(), model.parameters()):
-        ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
+        ema_param.data.mul_(alpha).add_(param.data, alpha=1 - alpha)
 
 
 def create_model(num_classes, args, ema=False):
@@ -136,6 +153,20 @@ def create_model(num_classes, args, ema=False):
 
 
 def train(train_loader, model, optimizer, epoch, global_step, args, ema_model=None):
+    """[summary]
+
+    Args:
+        train_loader ([type]): [description]
+        model ([type]): [description]
+        optimizer ([type]): [description]
+        epoch ([type]): [description]
+        global_step ([type]): [description]
+        args ([type]): [description]
+        ema_model ([type], optional): [description]. Defaults to None.
+
+    Returns:
+        [type]: [description]
+    """
     class_criterion = nn.CrossEntropyLoss(ignore_index=NO_LABEL, reduction='none').cuda()
     if args.consistency_type == 'mse':
         consistency_criterion = losses.softmax_mse_loss
@@ -143,6 +174,7 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model=No
         consistency_criterion = losses.softmax_kl_loss
     else:
         assert False, args.consistency_type
+
     residual_logit_criterion = losses.symmetric_mse_loss
 
     meters = AverageMeterSet()
@@ -157,7 +189,7 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model=No
     end = time.time()
 
     for i, (batch_input, target, weight, c_weight) in enumerate(train_loader):
-        if isMT:
+        if isMT:  # data.TransformTwice
             input = batch_input[0]
             ema_input = batch_input[1]  # ema input
         else:
@@ -172,8 +204,8 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model=No
 
         input_var = torch.autograd.Variable(input.cuda())
         target_var = torch.autograd.Variable(target.cuda())
-        weight_var = torch.autograd.Variable(weight.cuda())
-        c_weight_var = torch.autograd.Variable(c_weight.cuda())
+        weight_var = torch.autograd.Variable(weight.cuda())  # pseudo sample weight
+        c_weight_var = torch.autograd.Variable(c_weight.cuda())  # class weight
 
         minibatch_size = len(target_var)
         labeled_minibatch_size = target_var.data.ne(NO_LABEL).sum()
@@ -183,11 +215,11 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model=No
         if isMT:
             ema_input_var = torch.autograd.Variable(ema_input.cuda())
             ema_logit, _, _ = ema_model(ema_input_var)
-            class_logit, cons_logit, _ = model(input_var)
+            class_logit, cons_logit, _ = model(input_var)  # out two fc
 
             ema_logit = torch.autograd.Variable(ema_logit.detach().data, requires_grad=False)
 
-            if args.logit_distance_cost >= 0:
+            if args.logit_distance_cost >= 0:  # mse loss of two logits vector
                 res_loss = args.logit_distance_cost * residual_logit_criterion(
                     class_logit, cons_logit) / minibatch_size
                 meters.update('res_loss', res_loss.item())
@@ -199,7 +231,7 @@ def train(train_loader, model, optimizer, epoch, global_step, args, ema_model=No
             meters.update('ema_class_loss', ema_class_loss.item())
 
             if args.consistency:
-                consistency_weight = get_current_consistency_weight(epoch, args)
+                consistency_weight = get_current_consistency_weight(epoch, args)  # ramp up
                 meters.update('cons_weight', consistency_weight)
                 consistency_loss = consistency_weight * consistency_criterion(
                     cons_logit, ema_logit) / minibatch_size
@@ -345,31 +377,37 @@ def accuracy(output, target, topk=(1, )):
 
 
 def extract_features(train_loader, model, isMT=False):
-    model.eval()
-    embeddings_all, labels_all, index_all = [], [], []
+    """extract features of whole dataset
 
+    Args:
+        train_loader ([type]): noshuffle dataloader of full data
+        model ([type]): [description]
+        isMT (bool, optional): [description]. Defaults to False.
+
+    Returns:
+        [type]: [description]
+    """
+    model.eval()
+    embeddings_all, labels_all = [], []
+
+    # lp.db_semisuper.DatasetFolder.__getitem__()
     for i, (batch_input, target, weight, c_weight) in enumerate(train_loader):
-        if isMT:
+        if isMT:  # mt uses data.TransformTwice, and get a list with 2 items
             X = batch_input[0]
         else:
             X = batch_input
 
-        y = batch_input[1]
-
-        X = torch.autograd.Variable(X.cuda())
-        y = torch.autograd.Variable(y.cuda(async=True))
-
         if isMT:
-            _, _, feats = model(X)
+            _, _, feats = model(X.cuda())
         else:
-            _, feats = model(X)
+            _, feats = model(X.cuda())
 
-        embeddings_all.append(feats.data.cpu())
-        labels_all.append(y.data.cpu())
+        embeddings_all.append(feats.data.cpu())  # (200,128)
+        labels_all.append(target.data.cpu())  # (200,)
 
-    embeddings_all = np.asarray(torch.cat(embeddings_all).numpy())
-    labels_all = torch.cat(labels_all).numpy()
-    return (embeddings_all, labels_all)
+    embeddings_all = np.asarray(torch.cat(embeddings_all).numpy())  # (n,128)
+    labels_all = torch.cat(labels_all).numpy()  # (n,)
+    return embeddings_all, labels_all
 
 
 def load_args(args, isMT=False):

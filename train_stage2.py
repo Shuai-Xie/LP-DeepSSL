@@ -66,16 +66,18 @@ def main():
     # Create the dataset and loaders
     dataset_config = datasets.__dict__[args.dataset](isTwice=args.isMT)
     num_classes = dataset_config.pop('num_classes')
-    # use last 2 dataloaders
+    # train_loader_noshuff: twice batchsize full data
+    # train_data: lp.db_semisuper.DBSS dataset
     train_loader, eval_loader, train_loader_noshuff, train_data = create_data_loaders(
         **dataset_config, args=args)
 
     # Create the model
+    # if args.isL2=True, normalize feature vector before fc
     model = create_model(num_classes, args)
 
     # If Mean Teacher is turned on, create the ema model
     if args.isMT:
-        ema_model = create_model(num_classes, args, ema=True)
+        ema_model = create_model(num_classes, args, ema=True)  # ema_model, detach params
 
     optimizer = torch.optim.SGD(model.parameters(),
                                 args.lr,
@@ -96,10 +98,12 @@ def main():
     assert os.path.isfile(resume_fn), "=> no checkpoint found at '{}'".format(resume_fn)
     checkpoint = torch.load(resume_fn)
     best_prec1 = checkpoint['best_prec1']
+    # model
     model.load_state_dict(checkpoint['state_dict'])
+    # optimizer
     optimizer.load_state_dict(checkpoint['optimizer'])
     for param_group in optimizer.param_groups:
-        param_group['lr'] = args.lr
+        param_group['lr'] = args.lr  # reset optimizer lr
 
     # Compute the starting accuracy
     prec1, prec5 = validate(eval_loader, model, global_step, args.start_epoch, isMT=args.isMT)
@@ -113,24 +117,38 @@ def main():
     print('Resuming from:%s' % resume_fn)
 
     for epoch in range(args.start_epoch, args.epochs):
-        # Extract features and update the pseudolabels
+        # Extract features and update the pseudo labels
         print('Extracting features...')
-        feats, labels = extract_features(train_loader_noshuff, model, isMT=args.isMT)
+        # forward whole dataset each epoch!
+        t1 = time.time()
+        feats, _ = extract_features(train_loader_noshuff, model, isMT=args.isMT)
+        print('extract feature time: %.2f seconds' % (time.time() - t1))
+        # iterate 20 times, get propagated labels
+        t1 = time.time()
         sel_acc = train_data.update_plabels(feats, k=args.dfs_k, max_iter=20)
         print('selection accuracy: %.2f' % (sel_acc))
+        print('label propagation time: %.2f seconds' % (time.time() - t1))
 
         #  Train for one epoch with the new pseudolabels
         if args.isMT:
-            train_meter, global_step = train(train_loader,
-                                             model,
-                                             optimizer,
-                                             epoch,
-                                             global_step,
-                                             args,
-                                             ema_model=ema_model)
+            train_meter, global_step = train(
+                train_loader,
+                model,
+                optimizer,
+                epoch,
+                global_step,
+                args,
+                ema_model=ema_model,
+            )
         else:
-            train_meter, global_step = train(train_loader, model, optimizer, epoch, global_step,
-                                             args)
+            train_meter, global_step = train(
+                train_loader,
+                model,
+                optimizer,
+                epoch,
+                global_step,
+                args,
+            )
 
         # Evaluate the model
         if args.evaluation_epochs and (epoch + 1) % args.evaluation_epochs == 0:

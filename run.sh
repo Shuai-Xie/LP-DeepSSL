@@ -3,11 +3,11 @@ export PYTHONPATH='$PYTHONPATH:/export/nfs/xs/codes/lp-deepssl'
 stage=${1:-'1'} # train stage
 mt=${2:-'no'}   # whether to use mt
 
-TIME=$(date "+%Y%m%d%H%M%S")
+TIME=$(date "+%Y%m%d_%H%M%S")
 
 DATASET='cifar10'
 NOLABELS=500
-GPUID=1
+GPUID=0
 SPLITID=10  # 10-19
 LABELED_IN_BATCH=50  # whole batchsize=100
 
